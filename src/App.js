@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, auth, googleProvider } from './firebase';
+import { db } from './firebase';
 import { 
   collection, 
   addDoc, 
