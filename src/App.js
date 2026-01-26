@@ -275,8 +275,8 @@ function App() {
   return (
     <div className="App">
       <header className="app-header">
-        <h1>🌸 温泉記録帳 🌸</h1>
-        <p className="subtitle">あなたの温泉巡りを記録しましょう</p>
+        <h1> ♨️温泉記録♨️ </h1>
+        <p className="subtitle">宇宙船地球号温泉行き🚀</p>
       </header>
 
       <div className="button-container">
