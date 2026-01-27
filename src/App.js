@@ -19,7 +19,10 @@ function App() {
   const [onsens, setOnsens] = useState([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showStats, setShowStats] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [editingOnsen, setEditingOnsen] = useState(null);
+  const [homeAddress, setHomeAddress] = useState('');
+  const [filterWantToVisit, setFilterWantToVisit] = useState(false);
   
   // フォームの状態
   const [formData, setFormData] = useState({
@@ -29,6 +32,12 @@ function App() {
     springQualities: [],
     sourceTemp: '',
     ph: '',
+    waterTreatment: {
+      heating: false,
+      dilution: false,
+      circulation: false,
+      chlorination: false
+    },
     facilities: {
       openAirBath: false,
       sauna: false,
@@ -46,7 +55,9 @@ function App() {
     crowdedness: '普通',
     amenities: '',
     notes: '',
-    photoUrls: ['']
+    photoUrls: [''],
+    wantToVisit: false,
+    distance: null
   });
 
   const springQualityOptions = [
@@ -64,7 +75,20 @@ function App() {
 
   useEffect(() => {
     loadOnsens();
+    loadHomeAddress();
   }, []);
+
+  const loadHomeAddress = () => {
+    const saved = localStorage.getItem('homeAddress');
+    if (saved) {
+      setHomeAddress(saved);
+    }
+  };
+
+  const saveHomeAddress = (address) => {
+    localStorage.setItem('homeAddress', address);
+    setHomeAddress(address);
+  };
 
   const loadOnsens = async () => {
     try {
@@ -80,6 +104,40 @@ function App() {
     }
   };
 
+  // 住所から緯度経度を取得
+  const getCoordinates = async (address) => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`
+      );
+      const data = await response.json();
+      if (data && data.length > 0) {
+        return {
+          lat: parseFloat(data[0].lat),
+          lon: parseFloat(data[0].lon)
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error('座標取得エラー:', error);
+      return null;
+    }
+  };
+
+  // 2点間の直線距離を計算（Haversine formula）
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371; // 地球の半径（km）
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    return Math.round(distance * 10) / 10; // 小数点1桁に丸める
+  };
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
@@ -91,6 +149,16 @@ function App() {
       springQualities: prev.springQualities.includes(quality)
         ? prev.springQualities.filter(q => q !== quality)
         : [...prev.springQualities, quality]
+    }));
+  };
+
+  const handleWaterTreatmentToggle = (treatment) => {
+    setFormData(prev => ({
+      ...prev,
+      waterTreatment: {
+        ...prev.waterTreatment,
+        [treatment]: !prev.waterTreatment[treatment]
+      }
     }));
   };
 
@@ -137,9 +205,25 @@ function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      let distance = null;
+      
+      // 自宅住所と温泉住所がある場合、距離を計算
+      if (homeAddress && formData.address) {
+        const homeCoords = await getCoordinates(homeAddress);
+        const onsenCoords = await getCoordinates(formData.address);
+        
+        if (homeCoords && onsenCoords) {
+          distance = calculateDistance(
+            homeCoords.lat, homeCoords.lon,
+            onsenCoords.lat, onsenCoords.lon
+          );
+        }
+      }
+
       const onsenData = {
         ...formData,
         photoUrls: formData.photoUrls.filter(url => url.trim() !== ''),
+        distance: distance,
         createdAt: new Date().toISOString()
       };
 
@@ -166,6 +250,12 @@ function App() {
       springQualities: [],
       sourceTemp: '',
       ph: '',
+      waterTreatment: {
+        heating: false,
+        dilution: false,
+        circulation: false,
+        chlorination: false
+      },
       facilities: {
         openAirBath: false,
         sauna: false,
@@ -183,7 +273,9 @@ function App() {
       crowdedness: '普通',
       amenities: '',
       notes: '',
-      photoUrls: ['']
+      photoUrls: [''],
+      wantToVisit: false,
+      distance: null
     });
     setEditingOnsen(null);
   };
@@ -191,7 +283,14 @@ function App() {
   const handleEdit = (onsen) => {
     setFormData({
       ...onsen,
-      photoUrls: onsen.photoUrls && onsen.photoUrls.length > 0 ? onsen.photoUrls : ['']
+      photoUrls: onsen.photoUrls && onsen.photoUrls.length > 0 ? onsen.photoUrls : [''],
+      waterTreatment: onsen.waterTreatment || {
+        heating: false,
+        dilution: false,
+        circulation: false,
+        chlorination: false
+      },
+      wantToVisit: onsen.wantToVisit || false
     });
     setEditingOnsen(onsen);
     setShowAddForm(true);
@@ -209,9 +308,16 @@ function App() {
     }
   };
 
+  const getFilteredOnsens = () => {
+    if (filterWantToVisit) {
+      return onsens.filter(onsen => onsen.wantToVisit);
+    }
+    return onsens;
+  };
+
   const getMonthlyStats = () => {
     const monthlyData = {};
-    onsens.forEach(onsen => {
+    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
       const month = format(parseISO(onsen.visitDate), 'yyyy-MM');
       monthlyData[month] = (monthlyData[month] || 0) + 1;
     });
@@ -226,7 +332,7 @@ function App() {
 
   const getSpringQualityStats = () => {
     const qualityData = {};
-    onsens.forEach(onsen => {
+    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
       onsen.springQualities?.forEach(quality => {
         qualityData[quality] = (qualityData[quality] || 0) + 1;
       });
@@ -242,7 +348,7 @@ function App() {
 
   const getFavoriteOnsens = () => {
     const onsenCounts = {};
-    onsens.forEach(onsen => {
+    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
       onsenCounts[onsen.name] = (onsenCounts[onsen.name] || 0) + 1;
     });
 
@@ -253,18 +359,19 @@ function App() {
   };
 
   const getAverageRatings = () => {
-    if (onsens.length === 0) return null;
+    const visitedOnsens = onsens.filter(o => !o.wantToVisit);
+    if (visitedOnsens.length === 0) return null;
 
-    const totals = onsens.reduce((acc, onsen) => ({
+    const totals = visitedOnsens.reduce((acc, onsen) => ({
       waterQuality: acc.waterQuality + (onsen.ratings?.waterQuality || 0),
       cleanliness: acc.cleanliness + (onsen.ratings?.cleanliness || 0),
       access: acc.access + (onsen.ratings?.access || 0)
     }), { waterQuality: 0, cleanliness: 0, access: 0 });
 
     return {
-      waterQuality: (totals.waterQuality / onsens.length).toFixed(1),
-      cleanliness: (totals.cleanliness / onsens.length).toFixed(1),
-      access: (totals.access / onsens.length).toFixed(1)
+      waterQuality: (totals.waterQuality / visitedOnsens.length).toFixed(1),
+      cleanliness: (totals.cleanliness / visitedOnsens.length).toFixed(1),
+      access: (totals.access / visitedOnsens.length).toFixed(1)
     };
   };
 
@@ -275,8 +382,8 @@ function App() {
   return (
     <div className="App">
       <header className="app-header">
-        <h1> ♨️温泉記録♨️ </h1>
-        <p className="subtitle">宇宙船地球号温泉行き🚀</p>
+        <h1>🌸 温泉記録帳 🌸</h1>
+        <p className="subtitle">あなたの温泉巡りを記録しましょう</p>
       </header>
 
       <div className="button-container">
@@ -286,6 +393,7 @@ function App() {
             resetForm();
             setShowAddForm(!showAddForm);
             setShowStats(false);
+            setShowSettings(false);
           }}
         >
           {showAddForm ? '✕ 閉じる' : '+ 新しい温泉を記録'}
@@ -295,16 +403,56 @@ function App() {
           onClick={() => {
             setShowStats(!showStats);
             setShowAddForm(false);
+            setShowSettings(false);
           }}
         >
           {showStats ? '✕ 閉じる' : '📊 統計を見る'}
         </button>
+        <button 
+          className="main-button settings-button"
+          onClick={() => {
+            setShowSettings(!showSettings);
+            setShowAddForm(false);
+            setShowStats(false);
+          }}
+        >
+          {showSettings ? '✕ 閉じる' : '⚙️ 設定'}
+        </button>
       </div>
+
+      {showSettings && (
+        <div className="form-container">
+          <h2>設定</h2>
+          <div className="form-group">
+            <label>自宅の住所</label>
+            <input
+              type="text"
+              value={homeAddress}
+              onChange={(e) => saveHomeAddress(e.target.value)}
+              placeholder="例: 東京都新宿区西新宿2-8-1"
+            />
+            <p className="help-text">
+              自宅の住所を設定すると、各温泉までの距離が自動的に計算されます。
+            </p>
+          </div>
+        </div>
+      )}
 
       {showAddForm && (
         <div className="form-container">
           <h2>{editingOnsen ? '温泉記録を編集' : '新しい温泉を記録'}</h2>
           <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label className="checkbox-label-inline">
+                <input
+                  type="checkbox"
+                  checked={formData.wantToVisit}
+                  onChange={(e) => setFormData(prev => ({ ...prev, wantToVisit: e.target.checked }))}
+                />
+                行きたい温泉として登録（未訪問）
+              </label>
+            </div>
+
             <div className="form-group">
               <label>温泉名 *</label>
               <input
@@ -326,18 +474,21 @@ function App() {
                 onChange={handleInputChange}
                 placeholder="例: 東京都○○区○○"
               />
+              {homeAddress && <p className="help-text">※ 住所を入力すると自宅からの距離が自動計算されます</p>}
             </div>
 
-            <div className="form-group">
-              <label>訪問日 *</label>
-              <input
-                type="date"
-                name="visitDate"
-                value={formData.visitDate}
-                onChange={handleInputChange}
-                required
-              />
-            </div>
+            {!formData.wantToVisit && (
+              <div className="form-group">
+                <label>訪問日 *</label>
+                <input
+                  type="date"
+                  name="visitDate"
+                  value={formData.visitDate}
+                  onChange={handleInputChange}
+                  required
+                />
+              </div>
+            )}
 
             <div className="form-group">
               <label>泉質（複数選択可）</label>
@@ -376,6 +527,44 @@ function App() {
                   onChange={handleInputChange}
                   placeholder="例: 7.5"
                 />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>源泉の管理状況</label>
+              <div className="checkbox-grid">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.waterTreatment.heating}
+                    onChange={() => handleWaterTreatmentToggle('heating')}
+                  />
+                  加温
+                </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.waterTreatment.dilution}
+                    onChange={() => handleWaterTreatmentToggle('dilution')}
+                  />
+                  加水
+                </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.waterTreatment.circulation}
+                    onChange={() => handleWaterTreatmentToggle('circulation')}
+                  />
+                  循環
+                </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.waterTreatment.chlorination}
+                    onChange={() => handleWaterTreatmentToggle('chlorination')}
+                  />
+                  消毒
+                </label>
               </div>
             </div>
 
@@ -425,44 +614,46 @@ function App() {
               </div>
             </div>
 
-            <div className="form-group">
-              <label>評価</label>
-              <div className="rating-group">
-                <div className="rating-item">
-                  <span>お湯の質:</span>
-                  <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    value={formData.ratings.waterQuality}
-                    onChange={(e) => handleRatingChange('waterQuality', e.target.value)}
-                  />
-                  <span className="stars">{renderStars(formData.ratings.waterQuality)}</span>
-                </div>
-                <div className="rating-item">
-                  <span>清潔さ:</span>
-                  <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    value={formData.ratings.cleanliness}
-                    onChange={(e) => handleRatingChange('cleanliness', e.target.value)}
-                  />
-                  <span className="stars">{renderStars(formData.ratings.cleanliness)}</span>
-                </div>
-                <div className="rating-item">
-                  <span>アクセス:</span>
-                  <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    value={formData.ratings.access}
-                    onChange={(e) => handleRatingChange('access', e.target.value)}
-                  />
-                  <span className="stars">{renderStars(formData.ratings.access)}</span>
+            {!formData.wantToVisit && (
+              <div className="form-group">
+                <label>評価</label>
+                <div className="rating-group">
+                  <div className="rating-item">
+                    <span>お湯の質:</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="5"
+                      value={formData.ratings.waterQuality}
+                      onChange={(e) => handleRatingChange('waterQuality', e.target.value)}
+                    />
+                    <span className="stars">{renderStars(formData.ratings.waterQuality)}</span>
+                  </div>
+                  <div className="rating-item">
+                    <span>清潔さ:</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="5"
+                      value={formData.ratings.cleanliness}
+                      onChange={(e) => handleRatingChange('cleanliness', e.target.value)}
+                    />
+                    <span className="stars">{renderStars(formData.ratings.cleanliness)}</span>
+                  </div>
+                  <div className="rating-item">
+                    <span>アクセス:</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="5"
+                      value={formData.ratings.access}
+                      onChange={(e) => handleRatingChange('access', e.target.value)}
+                    />
+                    <span className="stars">{renderStars(formData.ratings.access)}</span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             <div className="form-row">
               <div className="form-group">
@@ -488,18 +679,20 @@ function App() {
               </div>
             </div>
 
-            <div className="form-group">
-              <label>混雑度</label>
-              <select
-                name="crowdedness"
-                value={formData.crowdedness}
-                onChange={handleInputChange}
-              >
-                {crowdednessOptions.map(option => (
-                  <option key={option} value={option}>{option}</option>
-                ))}
-              </select>
-            </div>
+            {!formData.wantToVisit && (
+              <div className="form-group">
+                <label>混雑度</label>
+                <select
+                  name="crowdedness"
+                  value={formData.crowdedness}
+                  onChange={handleInputChange}
+                >
+                  {crowdednessOptions.map(option => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="form-group">
               <label>アメニティ</label>
@@ -579,11 +772,15 @@ function App() {
           <div className="stats-summary">
             <div className="stat-card">
               <h3>総訪問回数</h3>
-              <p className="stat-number">{onsens.length}回</p>
+              <p className="stat-number">{onsens.filter(o => !o.wantToVisit).length}回</p>
             </div>
             <div className="stat-card">
               <h3>訪問した温泉数</h3>
-              <p className="stat-number">{new Set(onsens.map(o => o.name)).size}ヶ所</p>
+              <p className="stat-number">{new Set(onsens.filter(o => !o.wantToVisit).map(o => o.name)).size}ヶ所</p>
+            </div>
+            <div className="stat-card">
+              <h3>行きたい温泉</h3>
+              <p className="stat-number">{onsens.filter(o => o.wantToVisit).length}ヶ所</p>
             </div>
           </div>
 
@@ -635,7 +832,7 @@ function App() {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="訪問回数" fill="#FF9EC8" />
+                  <Bar dataKey="訪問回数" fill="#c9a961" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -651,7 +848,7 @@ function App() {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="訪問回数" fill="#B4A7D6" />
+                  <Bar dataKey="訪問回数" fill="#8b6f47" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -660,13 +857,30 @@ function App() {
       )}
 
       <div className="onsen-list">
-        <h2>温泉記録一覧</h2>
-        {onsens.length === 0 ? (
-          <p className="empty-message">まだ温泉が記録されていません。<br/>「+ 新しい温泉を記録」ボタンから始めましょう！</p>
+        <div className="list-header">
+          <h2>温泉記録一覧</h2>
+          <button 
+            className={`filter-button ${filterWantToVisit ? 'active' : ''}`}
+            onClick={() => setFilterWantToVisit(!filterWantToVisit)}
+          >
+            {filterWantToVisit ? '全て表示' : '行きたい温泉のみ表示'}
+          </button>
+        </div>
+        
+        {getFilteredOnsens().length === 0 ? (
+          <p className="empty-message">
+            {filterWantToVisit 
+              ? 'まだ「行きたい」温泉が登録されていません。'
+              : 'まだ温泉が記録されていません。'}
+            <br/>「+ 新しい温泉を記録」ボタンから始めましょう！
+          </p>
         ) : (
           <div className="onsen-grid">
-            {onsens.map(onsen => (
+            {getFilteredOnsens().map(onsen => (
               <div key={onsen.id} className="onsen-card">
+                {onsen.wantToVisit && (
+                  <div className="want-to-visit-badge">行きたい</div>
+                )}
                 {onsen.photoUrls && onsen.photoUrls.length > 0 && (
                   <div className="onsen-photos">
                     {onsen.photoUrls.slice(0, 3).map((url, index) => (
@@ -676,10 +890,16 @@ function App() {
                 )}
                 <div className="onsen-content">
                   <h3>{onsen.name}</h3>
-                  <p className="visit-date">📅 {format(parseISO(onsen.visitDate), 'yyyy年M月d日', { locale: ja })}</p>
+                  {!onsen.wantToVisit && (
+                    <p className="visit-date">📅 {format(parseISO(onsen.visitDate), 'yyyy年M月d日', { locale: ja })}</p>
+                  )}
                   
                   {onsen.address && (
                     <p className="address">📍 {onsen.address}</p>
+                  )}
+
+                  {onsen.distance && (
+                    <p className="distance">🚗 自宅から約{onsen.distance}km</p>
                   )}
 
                   {onsen.springQualities && onsen.springQualities.length > 0 && (
@@ -695,8 +915,20 @@ function App() {
                     {onsen.ph && <p>💧 pH: {onsen.ph}</p>}
                     {onsen.price && <p>💰 料金: {onsen.price}</p>}
                     {onsen.hours && <p>🕐 営業時間: {onsen.hours}</p>}
-                    {onsen.crowdedness && <p>👥 混雑度: {onsen.crowdedness}</p>}
+                    {!onsen.wantToVisit && onsen.crowdedness && <p>👥 混雑度: {onsen.crowdedness}</p>}
                   </div>
+
+                  {onsen.waterTreatment && Object.values(onsen.waterTreatment).some(v => v) && (
+                    <div className="water-treatment">
+                      <p className="water-treatment-title">源泉管理:</p>
+                      <div className="treatment-tags">
+                        {onsen.waterTreatment.heating && <span>加温</span>}
+                        {onsen.waterTreatment.dilution && <span>加水</span>}
+                        {onsen.waterTreatment.circulation && <span>循環</span>}
+                        {onsen.waterTreatment.chlorination && <span>消毒</span>}
+                      </div>
+                    </div>
+                  )}
 
                   {onsen.facilities && Object.values(onsen.facilities).some(f => f) && (
                     <div className="facilities">
@@ -715,20 +947,22 @@ function App() {
                     <p className="amenities">🧴 アメニティ: {onsen.amenities}</p>
                   )}
 
-                  <div className="ratings">
-                    <div className="rating-display-item">
-                      <span>お湯:</span>
-                      <span className="stars">{renderStars(onsen.ratings?.waterQuality || 0)}</span>
+                  {!onsen.wantToVisit && onsen.ratings && (
+                    <div className="ratings">
+                      <div className="rating-display-item">
+                        <span>お湯:</span>
+                        <span className="stars">{renderStars(onsen.ratings?.waterQuality || 0)}</span>
+                      </div>
+                      <div className="rating-display-item">
+                        <span>清潔:</span>
+                        <span className="stars">{renderStars(onsen.ratings?.cleanliness || 0)}</span>
+                      </div>
+                      <div className="rating-display-item">
+                        <span>アクセス:</span>
+                        <span className="stars">{renderStars(onsen.ratings?.access || 0)}</span>
+                      </div>
                     </div>
-                    <div className="rating-display-item">
-                      <span>清潔:</span>
-                      <span className="stars">{renderStars(onsen.ratings?.cleanliness || 0)}</span>
-                    </div>
-                    <div className="rating-display-item">
-                      <span>アクセス:</span>
-                      <span className="stars">{renderStars(onsen.ratings?.access || 0)}</span>
-                    </div>
-                  </div>
+                  )}
 
                   {onsen.notes && (
                     <p className="notes">💭 {onsen.notes}</p>
