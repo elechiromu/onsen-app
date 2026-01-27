@@ -1,4 +1,3 @@
-
 // Vercel Serverless Function
 // OpenStreetMap Nominatim APIを呼び出してCORS問題を回避
 
