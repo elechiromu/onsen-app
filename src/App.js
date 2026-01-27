@@ -104,25 +104,78 @@ function App() {
     }
   };
 
-  // 住所から緯度経度を取得
+ // 住所から緯度経度を取得
   const getCoordinates = async (address) => {
     try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`
-      );
+      console.log('🔍 住所から座標を取得中:', address);
+      
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address + ', Japan')}&limit=1&addressdetails=1`;
+      console.log('📡 APIリクエスト:', url);
+      
+      // レート制限対策：1秒待機
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const response = await fetch(url, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+      
+      console.log('📥 APIレスポンス status:', response.status);
+      
       const data = await response.json();
+      console.log('📦 取得データ:', data);
+      
       if (data && data.length > 0) {
-        return {
+        const coords = {
           lat: parseFloat(data[0].lat),
           lon: parseFloat(data[0].lon)
         };
+        console.log('✅ 座標取得成功:', coords);
+        return coords;
       }
+      
+      console.warn('⚠️ 座標が見つかりませんでした');
       return null;
     } catch (error) {
-      console.error('座標取得エラー:', error);
+      console.error('❌ 座標取得エラー:', error);
       return null;
     }
   };
+```
+
+5. **「Commit changes」** をクリック
+
+---
+
+## テスト手順
+
+1. 1〜2分待ってアプリをリロード
+2. **F12キーでConsoleを開く**
+3. **設定で自宅住所を確認**（例：「東京都新宿区西新宿2-8-1」）
+4. **新しい温泉を登録**
+   - 温泉名：「テスト温泉」
+   - 住所：「神奈川県足柄下郡箱根町湯本」
+5. **「記録する」をクリック**
+
+---
+
+## Consoleで確認すること
+
+以下のようなメッセージが表示されるはずです：
+```
+🔍 住所から座標を取得中: 東京都新宿区西新宿2-8-1
+📡 APIリクエスト: https://...
+📥 APIレスポンス status: 200
+📦 取得データ: [...]
+✅ 座標取得成功: {lat: ..., lon: ...}
+```
+
+または、エラーが出る場合：
+```
+⚠️ 座標が見つかりませんでした
+または
+❌ 座標取得エラー: ...
 
   // 2点間の直線距離を計算（Haversine formula）
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
