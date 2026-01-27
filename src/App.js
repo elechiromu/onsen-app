@@ -110,7 +110,7 @@ function App() {
       console.log('🔍 住所から座標を取得中:', address);
       
       // 自分のサーバーレス関数を呼び出す（CORS問題を回避）
-      const url = `/api/geocode?address=${encodeURIComponent(address)}`;
+      const url = `https://onsen-app.vercel.app/api/geocode?address=${encodeURIComponent(address)}`;
       console.log('📡 APIリクエスト:', url);
       
       const response = await fetch(url);
