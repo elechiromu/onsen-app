@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'OnsenApp/1.0 (onsen-app.vercel.app)', // 必須
+        'User-Agent': 'OnsenApp/1.0 (onsen-app.vercel.app)',
         'Accept': 'application/json'
       }
     });
