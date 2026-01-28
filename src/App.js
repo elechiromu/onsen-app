@@ -104,57 +104,6 @@ function App() {
     }
   };
 
-  // 住所から緯度経度を取得（サーバーレス関数経由）
-  const getCoordinates = async (address) => {
-    try {
-      console.log('🔍 住所から座標を取得中:', address);
-      
-      // 自分のサーバーレス関数を呼び出す（CORS問題を回避）
-      const url = `https://onsen-app.vercel.app/api/geocode?address=${encodeURIComponent(address)}`;
-      console.log('📡 APIリクエスト:', url);
-      
-      const response = await fetch(url);
-      console.log('📥 APIレスポンス status:', response.status);
-      
-      if (!response.ok) {
-        console.error('❌ API error:', response.status);
-        return null;
-      }
-      
-      const data = await response.json();
-      console.log('📦 取得データ:', data);
-      
-      if (data && data.lat && data.lon) {
-        const coords = {
-          lat: data.lat,
-          lon: data.lon
-        };
-        console.log('✅ 座標取得成功:', coords);
-        return coords;
-      }
-      
-      console.warn('⚠️ 座標が見つかりませんでした');
-      return null;
-    } catch (error) {
-      console.error('❌ 座標取得エラー:', error);
-      return null;
-    }
-  };
-
-  // 2点間の直線距離を計算（Haversine formula）
-  const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371; // 地球の半径（km）
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    const distance = R * c;
-    return Math.round(distance * 10) / 10; // 小数点1桁に丸める
-  };
-
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
@@ -222,25 +171,10 @@ function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      let distance = null;
-      
-      // 自宅住所と温泉住所がある場合、距離を計算
-      if (homeAddress && formData.address) {
-        const homeCoords = await getCoordinates(homeAddress);
-        const onsenCoords = await getCoordinates(formData.address);
-        
-        if (homeCoords && onsenCoords) {
-          distance = calculateDistance(
-            homeCoords.lat, homeCoords.lon,
-            onsenCoords.lat, onsenCoords.lon
-          );
-        }
-      }
-
       const onsenData = {
         ...formData,
         photoUrls: formData.photoUrls.filter(url => url.trim() !== ''),
-        distance: distance,
+        distance: formData.distance ? parseFloat(formData.distance) : null,
         createdAt: new Date().toISOString()
       };
 
@@ -449,7 +383,7 @@ function App() {
               placeholder="例: 東京都新宿区西新宿2-8-1"
             />
             <p className="help-text">
-              自宅の住所を設定すると、各温泉までの距離が自動的に計算されます。
+              自宅の住所を記録しておくと、Google Mapsなどで距離を調べる際に便利です。
             </p>
           </div>
         </div>
@@ -491,7 +425,6 @@ function App() {
                 onChange={handleInputChange}
                 placeholder="例: 東京都○○区○○"
               />
-              {homeAddress && <p className="help-text">※ 住所を入力すると自宅からの距離が自動計算されます</p>}
             </div>
 
             {!formData.wantToVisit && (
@@ -671,6 +604,22 @@ function App() {
                 </div>
               </div>
             )}
+
+            <div className="form-group">
+              <label>自宅からの距離（km）</label>
+              <input
+                type="number"
+                name="distance"
+                value={formData.distance || ''}
+                onChange={handleInputChange}
+                placeholder="例: 15.5"
+                step="0.1"
+                min="0"
+              />
+              <p className="help-text">
+                自宅からの距離を入力してください。Google Mapsなどで確認できます。
+              </p>
+            </div>
 
             <div className="form-row">
               <div className="form-group">
