@@ -41,6 +41,7 @@ function App() {
     facilities: {
       openAirBath: false,
       sauna: false,
+      coldBath: false,
       restRoom: false,
       restaurant: false,
       parking: false
@@ -210,6 +211,7 @@ function App() {
       facilities: {
         openAirBath: false,
         sauna: false,
+        coldBath: false,
         restRoom: false,
         restaurant: false,
         parking: false
@@ -536,6 +538,14 @@ function App() {
                     onChange={() => handleFacilityToggle('sauna')}
                   />
                   サウナ
+                </label>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.facilities.coldBath}
+                    onChange={() => handleFacilityToggle('coldBath')}
+                  />
+                  水風呂
                 </label>
                 <label className="checkbox-label">
                   <input
@@ -902,6 +912,7 @@ function App() {
                       <div className="facility-tags">
                         {onsen.facilities.openAirBath && <span>露天風呂</span>}
                         {onsen.facilities.sauna && <span>サウナ</span>}
+                        {onsen.facilities.coldBath && <span>水風呂</span>}
                         {onsen.facilities.restRoom && <span>休憩室</span>}
                         {onsen.facilities.restaurant && <span>レストラン</span>}
                         {onsen.facilities.parking && <span>駐車場</span>}
