@@ -1,966 +1,1604 @@
-import React, { useState, useEffect } from 'react';
-import { db } from './firebase';
-import { 
-  collection, 
-  addDoc, 
-  getDocs, 
-  deleteDoc, 
-  doc, 
-  updateDoc,
-  query,
-  orderBy 
-} from 'firebase/firestore';
-import { format, parseISO } from 'date-fns';
-import { ja } from 'date-fns/locale';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import './App.css';
+import React, { useState, useEffect, useRef } from 'react';
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, LabelList } from 'recharts';
+import { Book, Plus, Search, Star, X, ChevronLeft, ChevronRight, BookOpen, Library, BarChart3, Edit3, Trash2, LogIn, LogOut, User, Loader, Camera, Upload, Image } from 'lucide-react';
+import { Html5Qrcode } from 'html5-qrcode';
 
-function App() {
-  const [onsens, setOnsens] = useState([]);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [showStats, setShowStats] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [editingOnsen, setEditingOnsen] = useState(null);
-  const [homeAddress, setHomeAddress] = useState('');
-  const [filterWantToVisit, setFilterWantToVisit] = useState(false);
-  
-  // フォームの状態
-  const [formData, setFormData] = useState({
-    name: '',
-    address: '',
-    visitDate: format(new Date(), 'yyyy-MM-dd'),
-    springQualities: [],
-    sourceTemp: '',
-    ph: '',
-    waterTreatment: {
-      heating: false,
-      dilution: false,
-      circulation: false,
-      chlorination: false
-    },
-    facilities: {
-      openAirBath: false,
-      sauna: false,
-      coldBath: false,
-      restRoom: false,
-      restaurant: false,
-      parking: false
-    },
-    ratings: {
-      waterQuality: 3,
-      cleanliness: 3,
-      access: 3
-    },
-    price: '',
-    hours: '',
-    crowdedness: '普通',
-    amenities: '',
-    notes: '',
-    photoUrls: [''],
-    wantToVisit: false,
-    distance: null
-  });
+// Firebase imports
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-  const springQualityOptions = [
-    '単純泉',
-    '塩化物泉',
-    '硫酸塩泉',
-    '炭酸水素塩泉',
-    '硫黄泉',
-    '酸性泉',
-    '鉄泉',
-    '放射能泉'
-  ];
+// Firebase設定
+const firebaseConfig = {
+  apiKey: "AIzaSyBI76XW3f11_mbGTsjEDd9guE6LaFvvAfc",
+  authDomain: "my-bookshelf-fc438.firebaseapp.com",
+  projectId: "my-bookshelf-fc438",
+  storageBucket: "my-bookshelf-fc438.firebasestorage.app",
+  messagingSenderId: "373826584634",
+  appId: "1:373826584634:web:16c5961e24de9dcdc03503"
+};
 
-  const crowdednessOptions = ['空いている', '普通', 'やや混雑', '混雑'];
+// Firebase初期化
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const googleProvider = new GoogleAuthProvider();
 
+// 本のステータス
+const STATUS = {
+  READING: 'reading',
+  COMPLETED: 'completed',
+  TSUNDOKU: 'tsundoku',
+  WANT_TO_READ: 'want_to_read'
+};
+
+const STATUS_LABELS = {
+  [STATUS.READING]: '読書中',
+  [STATUS.COMPLETED]: '読了',
+  [STATUS.TSUNDOKU]: '積読',
+  [STATUS.WANT_TO_READ]: '読みたい'
+};
+
+const STATUS_COLORS = {
+  [STATUS.READING]: { bg: '#3b82f6', light: '#eff6ff', text: '#2563eb' },
+  [STATUS.COMPLETED]: { bg: '#10b981', light: '#ecfdf5', text: '#059669' },
+  [STATUS.TSUNDOKU]: { bg: '#8b5cf6', light: '#f5f3ff', text: '#7c3aed' },
+  [STATUS.WANT_TO_READ]: { bg: '#f59e0b', light: '#fffbeb', text: '#d97706' }
+};
+
+export default function BookshelfApp() {
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [books, setBooks] = useState([]);
+  const [currentView, setCurrentView] = useState('shelf');
+  const [selectedBook, setSelectedBook] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [searchResult, setSearchResult] = useState(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isbn, setIsbn] = useState('');
+  const [statsYear, setStatsYear] = useState(new Date().getFullYear());
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+
+  // 認証状態の監視
   useEffect(() => {
-    loadOnsens();
-    loadHomeAddress();
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
-  const loadHomeAddress = () => {
-    const saved = localStorage.getItem('homeAddress');
-    if (saved) {
-      setHomeAddress(saved);
+  // Firestoreからデータを取得（リアルタイム同期）
+  useEffect(() => {
+    if (!user) {
+      setBooks([]);
+      return;
     }
-  };
 
-  const saveHomeAddress = (address) => {
-    localStorage.setItem('homeAddress', address);
-    setHomeAddress(address);
-  };
-
-  const loadOnsens = async () => {
-    try {
-      const q = query(collection(db, 'onsens'), orderBy('visitDate', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const onsenList = querySnapshot.docs.map(doc => ({
+    const booksRef = collection(db, 'users', user.uid, 'books');
+    const q = query(booksRef, orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const booksData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
-      setOnsens(onsenList);
-    } catch (error) {
-      console.error('温泉データの読み込みエラー:', error);
-    }
-  };
+      setBooks(booksData);
+    });
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-  };
+    return () => unsubscribe();
+  }, [user]);
 
-  const handleSpringQualityToggle = (quality) => {
-    setFormData(prev => ({
-      ...prev,
-      springQualities: prev.springQualities.includes(quality)
-        ? prev.springQualities.filter(q => q !== quality)
-        : [...prev.springQualities, quality]
-    }));
-  };
-
-  const handleWaterTreatmentToggle = (treatment) => {
-    setFormData(prev => ({
-      ...prev,
-      waterTreatment: {
-        ...prev.waterTreatment,
-        [treatment]: !prev.waterTreatment[treatment]
-      }
-    }));
-  };
-
-  const handleFacilityToggle = (facility) => {
-    setFormData(prev => ({
-      ...prev,
-      facilities: {
-        ...prev.facilities,
-        [facility]: !prev.facilities[facility]
-      }
-    }));
-  };
-
-  const handleRatingChange = (category, value) => {
-    setFormData(prev => ({
-      ...prev,
-      ratings: {
-        ...prev.ratings,
-        [category]: parseInt(value)
-      }
-    }));
-  };
-
-  const handlePhotoUrlChange = (index, value) => {
-    const newPhotoUrls = [...formData.photoUrls];
-    newPhotoUrls[index] = value;
-    setFormData(prev => ({ ...prev, photoUrls: newPhotoUrls }));
-  };
-
-  const addPhotoUrlField = () => {
-    setFormData(prev => ({
-      ...prev,
-      photoUrls: [...prev.photoUrls, '']
-    }));
-  };
-
-  const removePhotoUrlField = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      photoUrls: prev.photoUrls.filter((_, i) => i !== index)
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  // Googleでログイン
+  const handleLogin = async () => {
     try {
-      const onsenData = {
-        ...formData,
-        photoUrls: formData.photoUrls.filter(url => url.trim() !== ''),
-        distance: formData.distance ? parseFloat(formData.distance) : null,
-        createdAt: new Date().toISOString()
-      };
-
-      if (editingOnsen) {
-        await updateDoc(doc(db, 'onsens', editingOnsen.id), onsenData);
-      } else {
-        await addDoc(collection(db, 'onsens'), onsenData);
-      }
-
-      resetForm();
-      loadOnsens();
-      setShowAddForm(false);
+      await signInWithPopup(auth, googleProvider);
     } catch (error) {
-      console.error('温泉の保存エラー:', error);
-      alert('保存に失敗しました。もう一度お試しください。');
+      console.error('ログインエラー:', error);
+      alert('ログインに失敗しました');
     }
   };
 
-  const resetForm = () => {
-    setFormData({
-      name: '',
-      address: '',
-      visitDate: format(new Date(), 'yyyy-MM-dd'),
-      springQualities: [],
-      sourceTemp: '',
-      ph: '',
-      waterTreatment: {
-        heating: false,
-        dilution: false,
-        circulation: false,
-        chlorination: false
-      },
-      facilities: {
-        openAirBath: false,
-        sauna: false,
-        coldBath: false,
-        restRoom: false,
-        restaurant: false,
-        parking: false
-      },
-      ratings: {
-        waterQuality: 3,
-        cleanliness: 3,
-        access: 3
-      },
-      price: '',
-      hours: '',
-      crowdedness: '普通',
-      amenities: '',
-      notes: '',
-      photoUrls: [''],
-      wantToVisit: false,
-      distance: null
-    });
-    setEditingOnsen(null);
+  // ログアウト
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('ログアウトエラー:', error);
+    }
   };
 
-  const handleEdit = (onsen) => {
-    setFormData({
-      ...onsen,
-      photoUrls: onsen.photoUrls && onsen.photoUrls.length > 0 ? onsen.photoUrls : [''],
-      waterTreatment: onsen.waterTreatment || {
-        heating: false,
-        dilution: false,
-        circulation: false,
-        chlorination: false
-      },
-      wantToVisit: onsen.wantToVisit || false
-    });
-    setEditingOnsen(onsen);
-    setShowAddForm(true);
+  // ISBN-10をISBN-13に変換
+  const convertIsbn10to13 = (isbn10) => {
+    if (isbn10.length !== 10) return isbn10;
+    const isbn12 = '978' + isbn10.slice(0, 9);
+    let sum = 0;
+    for (let i = 0; i < 12; i++) {
+      sum += parseInt(isbn12[i]) * (i % 2 === 0 ? 1 : 3);
+    }
+    const checkDigit = (10 - (sum % 10)) % 10;
+    return isbn12 + checkDigit;
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm('この温泉記録を削除してもよろしいですか?')) {
+  // Google Books APIで表紙画像を取得
+  const fetchGoogleBooksCover = async (isbn) => {
+    try {
+      const response = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`);
+      const data = await response.json();
+      if (data.items && data.items[0]?.volumeInfo?.imageLinks) {
+        const thumbnail = data.items[0].volumeInfo.imageLinks.thumbnail || '';
+        return thumbnail.replace('zoom=1', 'zoom=2').replace('http://', 'https://');
+      }
+      return '';
+    } catch (error) {
+      console.error('Google Books API error:', error);
+      return '';
+    }
+  };
+
+  // 複数のソースから画像を取得
+  const fetchBookCover = async (isbn) => {
+    const isbn13 = isbn.length === 10 ? convertIsbn10to13(isbn) : isbn;
+    const ndlUrl = `https://ndlsearch.ndl.go.jp/thumbnail/${isbn13}.jpg`;
+    
+    try {
+      const response = await fetch(`https://api.openbd.jp/v1/get?isbn=${isbn13}`);
+      const data = await response.json();
+      if (data && data[0]?.summary?.cover) {
+        return data[0].summary.cover;
+      }
+    } catch (e) {
+      console.log('OpenBD error:', e);
+    }
+
+    const googleCover = await fetchGoogleBooksCover(isbn13);
+    if (googleCover) {
+      return googleCover;
+    }
+
+    return ndlUrl;
+  };
+
+  // OpenBD + 複数APIで本を検索
+  const searchBook = async (isbnCode) => {
+    const cleanIsbn = isbnCode.replace(/[-\s]/g, '');
+    if (!/^\d{10}$|^\d{13}$/.test(cleanIsbn)) {
+      alert('有効なISBNを入力してください（10桁または13桁）');
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const isbn13 = cleanIsbn.length === 10 ? convertIsbn10to13(cleanIsbn) : cleanIsbn;
+      
+      const response = await fetch(`https://api.openbd.jp/v1/get?isbn=${isbn13}`);
+      const data = await response.json();
+      
+      let title = '';
+      let author = '';
+      let publisher = '';
+      let pubdate = '';
+
+      if (data && data[0]) {
+        const bookData = data[0].summary;
+        title = bookData.title || '';
+        author = bookData.author || '';
+        publisher = bookData.publisher || '';
+        pubdate = bookData.pubdate || '';
+      }
+
+      const cover = `https://ndlsearch.ndl.go.jp/thumbnail/${isbn13}.jpg`;
+
+      if (title) {
+        setSearchResult({
+          isbn: isbn13,
+          title,
+          author,
+          publisher,
+          cover,
+          pubdate
+        });
+      } else {
+        const googleResponse = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn13}`);
+        const googleData = await googleResponse.json();
+        
+        if (googleData.items && googleData.items[0]) {
+          const volumeInfo = googleData.items[0].volumeInfo;
+          setSearchResult({
+            isbn: isbn13,
+            title: volumeInfo.title || '',
+            author: volumeInfo.authors?.join(', ') || '',
+            publisher: volumeInfo.publisher || '',
+            cover: cover,
+            pubdate: volumeInfo.publishedDate || ''
+          });
+        } else {
+          alert('本が見つかりませんでした。手動で入力してください。');
+          setSearchResult({
+            isbn: isbn13,
+            title: '',
+            author: '',
+            publisher: '',
+            cover: cover,
+            pubdate: ''
+          });
+        }
+      }
+    } catch (error) {
+      console.error('検索エラー:', error);
+      alert('検索中にエラーが発生しました');
+    }
+    setIsSearching(false);
+  };
+
+  // 画像をFirebase Storageにアップロード
+  const uploadImage = async (file, bookId) => {
+    if (!user || !file) return null;
+    
+    try {
+      const storageRef = ref(storage, `users/${user.uid}/covers/${bookId}_${Date.now()}`);
+      await uploadBytes(storageRef, file);
+      const downloadURL = await getDownloadURL(storageRef);
+      return downloadURL;
+    } catch (error) {
+      console.error('画像アップロードエラー:', error);
+      alert('画像のアップロードに失敗しました');
+      return null;
+    }
+  };
+
+  // 本を追加（Firestoreに保存）
+  const addBook = async (bookData) => {
+    if (!user) return;
+    
+    const newBook = {
+      ...bookData,
+      status: STATUS.TSUNDOKU,
+      startDate: '',
+      endDate: '',
+      rating: 0,
+      review: '',
+      createdAt: new Date().toISOString()
+    };
+    
+    try {
+      const bookId = Date.now().toString();
+      await setDoc(doc(db, 'users', user.uid, 'books', bookId), newBook);
+      setSearchResult(null);
+      setIsbn('');
+      setCurrentView('shelf');
+    } catch (error) {
+      console.error('保存エラー:', error);
+      alert('本の保存に失敗しました');
+    }
+  };
+
+  // 本を更新（Firestoreに保存）
+  const updateBook = async (updatedBook) => {
+    if (!user) return;
+    
+    try {
+      const { id, ...bookData } = updatedBook;
+      await setDoc(doc(db, 'users', user.uid, 'books', id), bookData);
+      setSelectedBook(null);
+      setIsModalOpen(false);
+      setIsEditMode(false);
+    } catch (error) {
+      console.error('更新エラー:', error);
+      alert('更新に失敗しました');
+    }
+  };
+
+  // 本を削除（Firestoreから削除）
+  const deleteBook = async (id) => {
+    if (!user) return;
+    
+    if (confirm('この本を削除しますか？')) {
       try {
-        await deleteDoc(doc(db, 'onsens', id));
-        loadOnsens();
+        await deleteDoc(doc(db, 'users', user.uid, 'books', id));
+        setSelectedBook(null);
+        setIsModalOpen(false);
       } catch (error) {
         console.error('削除エラー:', error);
-        alert('削除に失敗しました。');
+        alert('削除に失敗しました');
       }
     }
   };
 
-  const getFilteredOnsens = () => {
-    if (filterWantToVisit) {
-      return onsens.filter(onsen => onsen.wantToVisit);
+  // 統計データの計算
+  const getMonthlyStats = (year) => {
+    const months = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+    const stats = months.map((month, index) => ({
+      month,
+      count: books.filter(book => {
+        if (!book.endDate || book.status !== STATUS.COMPLETED) return false;
+        const endDate = new Date(book.endDate);
+        return endDate.getFullYear() === year && endDate.getMonth() === index;
+      }).length
+    }));
+    return stats;
+  };
+
+  // フィルタリングされた本
+  const filteredBooks = filterStatus === 'all' 
+    ? books 
+    : books.filter(b => b.status === filterStatus);
+
+  // グラフの色を決定
+  const getBarColor = (count, index) => {
+    if (count === 0) return '#e5e7eb';
+    const colors = ['#38bdf8', '#34d399', '#a3e635'];
+    const maxCount = Math.max(...getMonthlyStats(statsYear).map(d => d.count));
+    if (count >= maxCount * 0.8) return colors[0];
+    if (count >= maxCount * 0.4) return colors[1];
+    return colors[2];
+  };
+
+  // ローディング中
+  if (authLoading) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'linear-gradient(135deg, #faf7f5 0%, #f5f0eb 100%)'
+      }}>
+        <Loader size={40} style={{ animation: 'spin 1s linear infinite', color: '#1e3a5f' }} />
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  // 未ログイン時の画面
+  if (!user) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)',
+        fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif",
+        padding: '20px'
+      }}>
+        <div style={{
+          background: 'white',
+          borderRadius: '24px',
+          padding: '48px 40px',
+          textAlign: 'center',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          maxWidth: '400px',
+          width: '100%'
+        }}>
+          <div style={{
+            width: '80px',
+            height: '80px',
+            borderRadius: '20px',
+            background: 'linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 24px'
+          }}>
+            <Library size={40} color="white" />
+          </div>
+          
+          <h1 style={{ fontSize: '28px', fontWeight: '700', color: '#1f2937', marginBottom: '8px' }}>
+            My Bookshelf
+          </h1>
+          <p style={{ color: '#6b7280', marginBottom: '32px', lineHeight: '1.6' }}>
+            読書記録をクラウドに保存<br />
+            iPhone・Mac間で同期できます
+          </p>
+          
+          <button
+            onClick={handleLogin}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '12px',
+              width: '100%',
+              padding: '16px 24px',
+              background: 'white',
+              border: '2px solid #e5e7eb',
+              borderRadius: '12px',
+              cursor: 'pointer',
+              fontSize: '16px',
+              fontWeight: '500',
+              color: '#1f2937',
+              transition: 'all 0.2s'
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = '#3b82f6';
+              e.currentTarget.style.background = '#f8fafc';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = '#e5e7eb';
+              e.currentTarget.style.background = 'white';
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Googleでログイン
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #faf7f5 0%, #f5f0eb 100%)',
+      fontFamily: "'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif"
+    }}>
+      {/* ヘッダー */}
+      <header style={{
+        background: 'linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)',
+        padding: '20px 24px',
+        color: 'white',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.15)'
+      }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Library size={32} strokeWidth={1.5} />
+              <h1 style={{ fontSize: '24px', fontWeight: '600', letterSpacing: '0.5px' }}>My Bookshelf</h1>
+            </div>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {user.photoURL ? (
+                  <img 
+                    src={user.photoURL} 
+                    alt="Profile"
+                    style={{ width: '32px', height: '32px', borderRadius: '50%' }}
+                  />
+                ) : (
+                  <User size={20} />
+                )}
+              </div>
+              <button
+                onClick={handleLogout}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '8px 12px',
+                  background: 'rgba(255,255,255,0.1)',
+                  border: 'none',
+                  borderRadius: '6px',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontSize: '12px'
+                }}
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
+          </div>
+          
+          <nav style={{ display: 'flex', gap: '8px' }}>
+            {[
+              { id: 'shelf', icon: Book, label: '本棚' },
+              { id: 'stats', icon: BarChart3, label: '統計' },
+              { id: 'add', icon: Plus, label: '追加' }
+            ].map(({ id, icon: Icon, label }) => (
+              <button
+                key={id}
+                onClick={() => setCurrentView(id)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: currentView === id ? 'rgba(255,255,255,0.2)' : 'transparent',
+                  color: 'white',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <Icon size={18} />
+                {label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
+        {/* 本棚ビュー */}
+        {currentView === 'shelf' && (
+          <div>
+            {/* 現在読書中セクション */}
+            {books.filter(b => b.status === STATUS.READING).length > 0 && (
+              <div style={{
+                marginBottom: '32px',
+                background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)',
+                borderRadius: '16px',
+                padding: '20px',
+                border: '2px solid #bfdbfe'
+              }}>
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '8px',
+                  marginBottom: '16px'
+                }}>
+                  <BookOpen size={20} style={{ color: '#2563eb' }} />
+                  <h2 style={{ fontSize: '16px', fontWeight: '600', color: '#1e40af' }}>
+                    現在読書中
+                  </h2>
+                  <span style={{
+                    background: '#3b82f6',
+                    color: 'white',
+                    padding: '2px 10px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
+                  }}>
+                    {books.filter(b => b.status === STATUS.READING).length}冊
+                  </span>
+                </div>
+                
+                <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', paddingBottom: '8px' }}>
+                  {books.filter(b => b.status === STATUS.READING).map(book => (
+                    <div
+                      key={book.id}
+                      onClick={() => { setSelectedBook(book); setIsModalOpen(true); }}
+                      style={{ flexShrink: 0, width: '100px', cursor: 'pointer', transition: 'transform 0.2s' }}
+                      onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
+                      onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                    >
+                      <div style={{
+                        aspectRatio: '2/3',
+                        borderRadius: '6px',
+                        overflow: 'hidden',
+                        boxShadow: '0 4px 15px rgba(59, 130, 246, 0.3)',
+                        background: book.cover ? 'white' : 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)'
+                      }}>
+                        {book.cover ? (
+                          <img src={book.cover} alt={book.title} referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px', textAlign: 'center' }}>
+                            <span style={{ color: 'white', fontSize: '10px', fontWeight: '500' }}>{book.title}</span>
+                          </div>
+                        )}
+                      </div>
+                      <p style={{ fontSize: '11px', fontWeight: '600', color: '#1e40af', marginTop: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {book.title}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 積読セクション */}
+            {books.filter(b => b.status === STATUS.TSUNDOKU).length > 0 && (
+              <div style={{
+                marginBottom: '32px',
+                background: 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
+                borderRadius: '16px',
+                padding: '20px',
+                border: '2px solid #ddd6fe'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+                  <Library size={20} style={{ color: '#7c3aed' }} />
+                  <h2 style={{ fontSize: '16px', fontWeight: '600', color: '#5b21b6' }}>積読</h2>
+                  <span style={{
+                    background: '#8b5cf6',
+                    color: 'white',
+                    padding: '2px 10px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '600'
+                  }}>
+                    {books.filter(b => b.status === STATUS.TSUNDOKU).length}冊
+                  </span>
+                </div>
+                
+                <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', paddingBottom: '8px' }}>
+                  {books.filter(b => b.status === STATUS.TSUNDOKU).map(book => (
+                    <div
+                      key={book.id}
+                      onClick={() => { setSelectedBook(book); setIsModalOpen(true); }}
+                      style={{ flexShrink: 0, width: '100px', cursor: 'pointer', transition: 'transform 0.2s' }}
+                      onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
+                      onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                    >
+                      <div style={{
+                        aspectRatio: '2/3',
+                        borderRadius: '6px',
+                        overflow: 'hidden',
+                        boxShadow: '0 4px 15px rgba(139, 92, 246, 0.3)',
+                        background: book.cover ? 'white' : 'linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%)'
+                      }}>
+                        {book.cover ? (
+                          <img src={book.cover} alt={book.title} referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px', textAlign: 'center' }}>
+                            <span style={{ color: 'white', fontSize: '10px', fontWeight: '500' }}>{book.title}</span>
+                          </div>
+                        )}
+                      </div>
+                      <p style={{ fontSize: '11px', fontWeight: '600', color: '#5b21b6', marginTop: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {book.title}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* フィルター */}
+            <div style={{ marginBottom: '24px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {[
+                { id: 'all', label: 'すべて' },
+                { id: STATUS.READING, label: '読書中' },
+                { id: STATUS.COMPLETED, label: '読了' },
+                { id: STATUS.TSUNDOKU, label: '積読' },
+                { id: STATUS.WANT_TO_READ, label: '読みたい' }
+              ].map(({ id, label }) => (
+                <button
+                  key={id}
+                  onClick={() => setFilterStatus(id)}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '20px',
+                    border: '2px solid',
+                    borderColor: filterStatus === id ? '#1e3a5f' : '#d1d5db',
+                    background: filterStatus === id ? '#1e3a5f' : 'white',
+                    color: filterStatus === id ? 'white' : '#4b5563',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* 本棚グリッド */}
+            {filteredBooks.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '60px 20px', color: '#6b7280' }}>
+                <BookOpen size={64} strokeWidth={1} style={{ margin: '0 auto 16px', opacity: 0.5 }} />
+                <p style={{ fontSize: '16px' }}>まだ本が登録されていません</p>
+                <button
+                  onClick={() => setCurrentView('add')}
+                  style={{
+                    marginTop: '16px',
+                    padding: '12px 24px',
+                    background: '#1e3a5f',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  本を追加する
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '20px' }}>
+                {filteredBooks.map(book => (
+                  <div
+                    key={book.id}
+                    onClick={() => { setSelectedBook(book); setIsModalOpen(true); }}
+                    style={{ cursor: 'pointer', transition: 'transform 0.2s, box-shadow 0.2s' }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.transform = 'translateY(-4px)';
+                      e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.15)';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.transform = 'translateY(0)';
+                      e.currentTarget.style.boxShadow = 'none';
+                    }}
+                  >
+                    <div style={{
+                      aspectRatio: '2/3',
+                      borderRadius: '4px',
+                      overflow: 'hidden',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                      background: book.cover ? 'white' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                      position: 'relative'
+                    }}>
+                      {book.cover ? (
+                        <img src={book.cover} alt={book.title} referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ) : (
+                        <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px', textAlign: 'center' }}>
+                          <span style={{ color: 'white', fontSize: '12px', fontWeight: '500', lineHeight: '1.4' }}>{book.title}</span>
+                        </div>
+                      )}
+                      <div style={{
+                        position: 'absolute',
+                        top: '8px',
+                        right: '8px',
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        fontSize: '10px',
+                        fontWeight: '600',
+                        background: STATUS_COLORS[book.status]?.bg || '#6b7280',
+                        color: 'white'
+                      }}>
+                        {STATUS_LABELS[book.status]}
+                      </div>
+                    </div>
+                    <div style={{ marginTop: '10px' }}>
+                      <p style={{ fontSize: '13px', fontWeight: '600', color: '#1f2937', lineHeight: '1.4', overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                        {book.title}
+                      </p>
+                      <p style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {book.author}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 統計ビュー */}
+        {currentView === 'stats' && (
+          <div>
+            <div style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.08)'
+            }}>
+              <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#1f2937', marginBottom: '20px' }}>
+                読み終わった本
+              </h2>
+              
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '24px', marginBottom: '24px' }}>
+                <button onClick={() => setStatsYear(y => y - 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', padding: '8px' }}>
+                  <ChevronLeft size={24} />
+                </button>
+                <span style={{ fontSize: '20px', fontWeight: '600', color: '#3b82f6' }}>{statsYear}年</span>
+                <button onClick={() => setStatsYear(y => y + 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', padding: '8px' }}>
+                  <ChevronRight size={24} />
+                </button>
+              </div>
+
+              <div style={{ height: '300px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={getMonthlyStats(statsYear)} margin={{ top: 30, right: 10, left: 10, bottom: 5 }}>
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#6b7280' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#9ca3af' }} label={{ value: '(冊)', position: 'top', offset: 10, fontSize: 12, fill: '#9ca3af' }} />
+                    <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={40}>
+                      <LabelList dataKey="count" position="top" style={{ fontSize: '12px', fill: '#4b5563', fontWeight: '600' }} formatter={(value) => value > 0 ? value : ''} />
+                      {getMonthlyStats(statsYear).map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={getBarColor(entry.count, index)} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div style={{ marginTop: '24px', padding: '16px', background: '#f8fafc', borderRadius: '8px', textAlign: 'center' }}>
+                <span style={{ color: '#6b7280', fontSize: '14px' }}>年間読了数</span>
+                <span style={{ display: 'block', fontSize: '36px', fontWeight: '700', color: '#1e3a5f', marginTop: '4px' }}>
+                  {getMonthlyStats(statsYear).reduce((sum, m) => sum + m.count, 0)}
+                  <span style={{ fontSize: '16px', fontWeight: '500' }}> 冊</span>
+                </span>
+              </div>
+            </div>
+
+            {/* 月別読了本一覧 */}
+            <div style={{
+              background: 'white',
+              borderRadius: '16px',
+              padding: '24px',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+              marginTop: '24px'
+            }}>
+              <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#1f2937', marginBottom: '20px' }}>
+                {statsYear}年の読了本
+              </h2>
+
+              {(() => {
+                const completedBooks = books.filter(book => {
+                  if (!book.endDate || book.status !== STATUS.COMPLETED) return false;
+                  const endDate = new Date(book.endDate);
+                  return endDate.getFullYear() === statsYear;
+                });
+
+                if (completedBooks.length === 0) {
+                  return (
+                    <p style={{ color: '#9ca3af', textAlign: 'center', padding: '20px' }}>
+                      この年に読了した本はありません
+                    </p>
+                  );
+                }
+
+                const monthNames = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+                const booksByMonth = {};
+                
+                completedBooks.forEach(book => {
+                  const month = new Date(book.endDate).getMonth();
+                  if (!booksByMonth[month]) booksByMonth[month] = [];
+                  booksByMonth[month].push(book);
+                });
+
+                const sortedMonths = Object.keys(booksByMonth).map(Number).sort((a, b) => b - a);
+
+                return sortedMonths.map(month => (
+                  <div key={month} style={{ marginBottom: '24px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                      <span style={{ background: '#3b82f6', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '13px', fontWeight: '600' }}>
+                        {monthNames[month]}
+                      </span>
+                      <span style={{ color: '#6b7280', fontSize: '13px' }}>{booksByMonth[month].length}冊</span>
+                    </div>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {booksByMonth[month].sort((a, b) => new Date(b.endDate) - new Date(a.endDate)).map(book => (
+                        <div
+                          key={book.id}
+                          onClick={() => { setSelectedBook(book); setIsModalOpen(true); }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            padding: '12px',
+                            background: '#f8fafc',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            transition: 'background 0.2s'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'}
+                          onMouseLeave={e => e.currentTarget.style.background = '#f8fafc'}
+                        >
+                          <div style={{
+                            width: '40px',
+                            height: '60px',
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                            flexShrink: 0,
+                            background: book.cover ? '#fff' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+                          }}>
+                            {book.cover ? (
+                              <img src={book.cover} referrerPolicy="no-referrer" alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            ) : (
+                              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <Book size={16} color="white" />
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <p style={{ fontSize: '14px', fontWeight: '600', color: '#1f2937', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {book.title}
+                            </p>
+                            <p style={{ fontSize: '12px', color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {book.author}
+                            </p>
+                          </div>
+
+                          {book.rating > 0 && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                              <Star size={14} fill="#fbbf24" stroke="#fbbf24" />
+                              <span style={{ fontSize: '12px', color: '#6b7280' }}>{book.rating}</span>
+                            </div>
+                          )}
+
+                          <span style={{ fontSize: '11px', color: '#9ca3af', flexShrink: 0 }}>
+                            {new Date(book.endDate).getDate()}日
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* 追加ビュー */}
+        {currentView === 'add' && (
+          <div style={{
+            background: 'white',
+            borderRadius: '16px',
+            padding: '24px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.08)'
+          }}>
+            <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#1f2937', marginBottom: '20px' }}>
+              本を追加
+            </h2>
+
+            <button
+              onClick={() => setIsScannerOpen(true)}
+              style={{
+                width: '100%',
+                padding: '16px',
+                marginBottom: '24px',
+                background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '12px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '12px',
+                fontSize: '16px',
+                fontWeight: '600',
+                boxShadow: '0 4px 15px rgba(59, 130, 246, 0.3)'
+              }}
+            >
+              <Camera size={24} />
+              バーコードをスキャン
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+              <span style={{ color: '#9ca3af', fontSize: '14px' }}>または</span>
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: '#4b5563', marginBottom: '8px' }}>
+                ISBN（バーコード下の数字）
+              </label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={isbn}
+                  onChange={e => setIsbn(e.target.value)}
+                  placeholder="978-4-XXXX-XXXX-X"
+                  style={{
+                    flex: 1,
+                    padding: '12px 16px',
+                    border: '2px solid #e5e7eb',
+                    borderRadius: '8px',
+                    fontSize: '16px',
+                    outline: 'none',
+                    transition: 'border-color 0.2s'
+                  }}
+                  onFocus={e => e.target.style.borderColor = '#3b82f6'}
+                  onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+                  onKeyDown={e => e.key === 'Enter' && searchBook(isbn)}
+                />
+                <button
+                  onClick={() => searchBook(isbn)}
+                  disabled={isSearching}
+                  style={{
+                    padding: '12px 24px',
+                    background: '#1e3a5f',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: isSearching ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '14px',
+                    fontWeight: '500'
+                  }}
+                >
+                  <Search size={18} />
+                  {isSearching ? '検索中...' : '検索'}
+                </button>
+              </div>
+            </div>
+
+            {searchResult && (
+              <SearchResultCard
+                result={searchResult}
+                onAdd={addBook}
+                onCancel={() => setSearchResult(null)}
+                uploadImage={uploadImage}
+                user={user}
+              />
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* 本詳細モーダル */}
+      {isModalOpen && selectedBook && (
+        <BookDetailModal
+          book={selectedBook}
+          isEditMode={isEditMode}
+          onClose={() => { setIsModalOpen(false); setSelectedBook(null); setIsEditMode(false); }}
+          onEdit={() => setIsEditMode(true)}
+          onSave={updateBook}
+          onDelete={deleteBook}
+          uploadImage={uploadImage}
+          user={user}
+        />
+      )}
+
+      {/* バーコードスキャンモーダル */}
+      {isScannerOpen && (
+        <BarcodeScanner
+          onScan={(scannedIsbn) => {
+            setIsbn(scannedIsbn);
+            setIsScannerOpen(false);
+            searchBook(scannedIsbn);
+          }}
+          onClose={() => setIsScannerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// 検索結果カード
+function SearchResultCard({ result, onAdd, onCancel, uploadImage, user }) {
+  const [editedResult, setEditedResult] = useState(result);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setIsUploading(true);
+    const tempId = Date.now().toString();
+    const url = await uploadImage(file, tempId);
+    if (url) {
+      setEditedResult({ ...editedResult, cover: url });
     }
-    return onsens;
-  };
-
-  const getMonthlyStats = () => {
-    const monthlyData = {};
-    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
-      const month = format(parseISO(onsen.visitDate), 'yyyy-MM');
-      monthlyData[month] = (monthlyData[month] || 0) + 1;
-    });
-
-    return Object.entries(monthlyData)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, count]) => ({
-        month: format(parseISO(month + '-01'), 'yyyy年M月', { locale: ja }),
-        訪問回数: count
-      }));
-  };
-
-  const getSpringQualityStats = () => {
-    const qualityData = {};
-    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
-      onsen.springQualities?.forEach(quality => {
-        qualityData[quality] = (qualityData[quality] || 0) + 1;
-      });
-    });
-
-    return Object.entries(qualityData)
-      .map(([quality, count]) => ({
-        name: quality,
-        訪問回数: count
-      }))
-      .sort((a, b) => b.訪問回数 - a.訪問回数);
-  };
-
-  const getFavoriteOnsens = () => {
-    const onsenCounts = {};
-    onsens.filter(o => !o.wantToVisit).forEach(onsen => {
-      onsenCounts[onsen.name] = (onsenCounts[onsen.name] || 0) + 1;
-    });
-
-    return Object.entries(onsenCounts)
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-  };
-
-  const getAverageRatings = () => {
-    const visitedOnsens = onsens.filter(o => !o.wantToVisit);
-    if (visitedOnsens.length === 0) return null;
-
-    const totals = visitedOnsens.reduce((acc, onsen) => ({
-      waterQuality: acc.waterQuality + (onsen.ratings?.waterQuality || 0),
-      cleanliness: acc.cleanliness + (onsen.ratings?.cleanliness || 0),
-      access: acc.access + (onsen.ratings?.access || 0)
-    }), { waterQuality: 0, cleanliness: 0, access: 0 });
-
-    return {
-      waterQuality: (totals.waterQuality / visitedOnsens.length).toFixed(1),
-      cleanliness: (totals.cleanliness / visitedOnsens.length).toFixed(1),
-      access: (totals.access / visitedOnsens.length).toFixed(1)
-    };
-  };
-
-  const renderStars = (rating) => {
-    return '★'.repeat(rating) + '☆'.repeat(5 - rating);
+    setIsUploading(false);
   };
 
   return (
-    <div className="App">
-      <header className="app-header">
-        <h1>🌸 温泉記録帳 🌸</h1>
-        <p className="subtitle">あなたの温泉巡りを記録しましょう</p>
-      </header>
-
-      <div className="button-container">
-        <button 
-          className="main-button add-button"
-          onClick={() => {
-            resetForm();
-            setShowAddForm(!showAddForm);
-            setShowStats(false);
-            setShowSettings(false);
-          }}
-        >
-          {showAddForm ? '✕ 閉じる' : '+ 新しい温泉を記録'}
-        </button>
-        <button 
-          className="main-button stats-button"
-          onClick={() => {
-            setShowStats(!showStats);
-            setShowAddForm(false);
-            setShowSettings(false);
-          }}
-        >
-          {showStats ? '✕ 閉じる' : '📊 統計を見る'}
-        </button>
-        <button 
-          className="main-button settings-button"
-          onClick={() => {
-            setShowSettings(!showSettings);
-            setShowAddForm(false);
-            setShowStats(false);
-          }}
-        >
-          {showSettings ? '✕ 閉じる' : '⚙️ 設定'}
-        </button>
-      </div>
-
-      {showSettings && (
-        <div className="form-container">
-          <h2>設定</h2>
-          <div className="form-group">
-            <label>自宅の住所</label>
-            <input
-              type="text"
-              value={homeAddress}
-              onChange={(e) => saveHomeAddress(e.target.value)}
-              placeholder="例: 東京都新宿区西新宿2-8-1"
-            />
-            <p className="help-text">
-              自宅の住所を記録しておくと、Google Mapsなどで距離を調べる際に便利です。
-            </p>
+    <div style={{ background: '#f8fafc', borderRadius: '12px', padding: '20px' }}>
+      <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#4b5563', marginBottom: '16px' }}>検索結果</h3>
+      
+      <div style={{ display: 'flex', gap: '20px' }}>
+        <div style={{ width: '100px', flexShrink: 0 }}>
+          <div style={{
+            aspectRatio: '2/3',
+            borderRadius: '4px',
+            overflow: 'hidden',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+            background: editedResult.cover ? 'white' : '#e5e7eb',
+            position: 'relative'
+          }}>
+            {editedResult.cover ? (
+              <img src={editedResult.cover} referrerPolicy="no-referrer" alt="表紙" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9ca3af' }}>
+                <Book size={32} />
+              </div>
+            )}
           </div>
-        </div>
-      )}
-
-      {showAddForm && (
-        <div className="form-container">
-          <h2>{editingOnsen ? '温泉記録を編集' : '新しい温泉を記録'}</h2>
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label className="checkbox-label-inline">
-                <input
-                  type="checkbox"
-                  checked={formData.wantToVisit}
-                  onChange={(e) => setFormData(prev => ({ ...prev, wantToVisit: e.target.checked }))}
-                />
-                行きたい温泉として登録（未訪問）
-              </label>
-            </div>
-
-            <div className="form-group">
-              <label>温泉名 *</label>
-              <input
-                type="text"
-                name="name"
-                value={formData.name}
-                onChange={handleInputChange}
-                required
-                placeholder="例: ○○温泉"
-              />
-            </div>
-
-            <div className="form-group">
-              <label>住所</label>
-              <input
-                type="text"
-                name="address"
-                value={formData.address}
-                onChange={handleInputChange}
-                placeholder="例: 東京都○○区○○"
-              />
-            </div>
-
-            {!formData.wantToVisit && (
-              <div className="form-group">
-                <label>訪問日 *</label>
-                <input
-                  type="date"
-                  name="visitDate"
-                  value={formData.visitDate}
-                  onChange={handleInputChange}
-                  required
-                />
-              </div>
-            )}
-
-            <div className="form-group">
-              <label>泉質（複数選択可）</label>
-              <div className="checkbox-grid">
-                {springQualityOptions.map(quality => (
-                  <label key={quality} className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={formData.springQualities.includes(quality)}
-                      onChange={() => handleSpringQualityToggle(quality)}
-                    />
-                    {quality}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>源泉温度</label>
-                <input
-                  type="text"
-                  name="sourceTemp"
-                  value={formData.sourceTemp}
-                  onChange={handleInputChange}
-                  placeholder="例: 42℃"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>pH値</label>
-                <input
-                  type="text"
-                  name="ph"
-                  value={formData.ph}
-                  onChange={handleInputChange}
-                  placeholder="例: 7.5"
-                />
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>源泉の管理状況</label>
-              <div className="checkbox-grid">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.waterTreatment.heating}
-                    onChange={() => handleWaterTreatmentToggle('heating')}
-                  />
-                  加温
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.waterTreatment.dilution}
-                    onChange={() => handleWaterTreatmentToggle('dilution')}
-                  />
-                  加水
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.waterTreatment.circulation}
-                    onChange={() => handleWaterTreatmentToggle('circulation')}
-                  />
-                  循環
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.waterTreatment.chlorination}
-                    onChange={() => handleWaterTreatmentToggle('chlorination')}
-                  />
-                  消毒
-                </label>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>施設・設備</label>
-              <div className="checkbox-grid">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.openAirBath}
-                    onChange={() => handleFacilityToggle('openAirBath')}
-                  />
-                  露天風呂
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.sauna}
-                    onChange={() => handleFacilityToggle('sauna')}
-                  />
-                  サウナ
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.coldBath}
-                    onChange={() => handleFacilityToggle('coldBath')}
-                  />
-                  水風呂
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.restRoom}
-                    onChange={() => handleFacilityToggle('restRoom')}
-                  />
-                  休憩室
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.restaurant}
-                    onChange={() => handleFacilityToggle('restaurant')}
-                  />
-                  レストラン
-                </label>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.facilities.parking}
-                    onChange={() => handleFacilityToggle('parking')}
-                  />
-                  駐車場
-                </label>
-              </div>
-            </div>
-
-            {!formData.wantToVisit && (
-              <div className="form-group">
-                <label>評価</label>
-                <div className="rating-group">
-                  <div className="rating-item">
-                    <span>お湯の質:</span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="5"
-                      value={formData.ratings.waterQuality}
-                      onChange={(e) => handleRatingChange('waterQuality', e.target.value)}
-                    />
-                    <span className="stars">{renderStars(formData.ratings.waterQuality)}</span>
-                  </div>
-                  <div className="rating-item">
-                    <span>清潔さ:</span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="5"
-                      value={formData.ratings.cleanliness}
-                      onChange={(e) => handleRatingChange('cleanliness', e.target.value)}
-                    />
-                    <span className="stars">{renderStars(formData.ratings.cleanliness)}</span>
-                  </div>
-                  <div className="rating-item">
-                    <span>アクセス:</span>
-                    <input
-                      type="range"
-                      min="1"
-                      max="5"
-                      value={formData.ratings.access}
-                      onChange={(e) => handleRatingChange('access', e.target.value)}
-                    />
-                    <span className="stars">{renderStars(formData.ratings.access)}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="form-group">
-              <label>自宅からの距離（km）</label>
-              <input
-                type="number"
-                name="distance"
-                value={formData.distance || ''}
-                onChange={handleInputChange}
-                placeholder="例: 15.5"
-                step="0.1"
-                min="0"
-              />
-              <p className="help-text">
-                自宅からの距離を入力してください。Google Mapsなどで確認できます。
-              </p>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>入浴料金</label>
-                <input
-                  type="text"
-                  name="price"
-                  value={formData.price}
-                  onChange={handleInputChange}
-                  placeholder="例: 800円"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>営業時間</label>
-                <input
-                  type="text"
-                  name="hours"
-                  value={formData.hours}
-                  onChange={handleInputChange}
-                  placeholder="例: 10:00-22:00"
-                />
-              </div>
-            </div>
-
-            {!formData.wantToVisit && (
-              <div className="form-group">
-                <label>混雑度</label>
-                <select
-                  name="crowdedness"
-                  value={formData.crowdedness}
-                  onChange={handleInputChange}
-                >
-                  {crowdednessOptions.map(option => (
-                    <option key={option} value={option}>{option}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className="form-group">
-              <label>アメニティ</label>
-              <input
-                type="text"
-                name="amenities"
-                value={formData.amenities}
-                onChange={handleInputChange}
-                placeholder="例: シャンプー、ボディソープ、タオル"
-              />
-            </div>
-
-            <div className="form-group">
-              <label>写真URL</label>
-              {formData.photoUrls.map((url, index) => (
-                <div key={index} className="photo-url-input">
-                  <input
-                    type="url"
-                    value={url}
-                    onChange={(e) => handlePhotoUrlChange(index, e.target.value)}
-                    placeholder="https://example.com/photo.jpg"
-                  />
-                  {formData.photoUrls.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => removePhotoUrlField(index)}
-                      className="remove-photo-button"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={addPhotoUrlField}
-                className="add-photo-button"
-              >
-                + 写真URLを追加
-              </button>
-            </div>
-
-            <div className="form-group">
-              <label>メモ・感想</label>
-              <textarea
-                name="notes"
-                value={formData.notes}
-                onChange={handleInputChange}
-                rows="4"
-                placeholder="温泉の感想や気づいたことを記録しましょう"
-              />
-            </div>
-
-            <div className="form-buttons">
-              <button type="submit" className="submit-button">
-                {editingOnsen ? '更新する' : '記録する'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  resetForm();
-                  setShowAddForm(false);
-                }}
-                className="cancel-button"
-              >
-                キャンセル
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {showStats && (
-        <div className="stats-container">
-          <h2>📊 温泉巡り統計</h2>
           
-          <div className="stats-summary">
-            <div className="stat-card">
-              <h3>総訪問回数</h3>
-              <p className="stat-number">{onsens.filter(o => !o.wantToVisit).length}回</p>
-            </div>
-            <div className="stat-card">
-              <h3>訪問した温泉数</h3>
-              <p className="stat-number">{new Set(onsens.filter(o => !o.wantToVisit).map(o => o.name)).size}ヶ所</p>
-            </div>
-            <div className="stat-card">
-              <h3>行きたい温泉</h3>
-              <p className="stat-number">{onsens.filter(o => o.wantToVisit).length}ヶ所</p>
-            </div>
-          </div>
-
-          {getAverageRatings() && (
-            <div className="average-ratings">
-              <h3>平均評価</h3>
-              <div className="rating-display">
-                <div className="rating-display-item">
-                  <span>お湯の質:</span>
-                  <span className="stars">{renderStars(Math.round(getAverageRatings().waterQuality))}</span>
-                  <span>{getAverageRatings().waterQuality}</span>
-                </div>
-                <div className="rating-display-item">
-                  <span>清潔さ:</span>
-                  <span className="stars">{renderStars(Math.round(getAverageRatings().cleanliness))}</span>
-                  <span>{getAverageRatings().cleanliness}</span>
-                </div>
-                <div className="rating-display-item">
-                  <span>アクセス:</span>
-                  <span className="stars">{renderStars(Math.round(getAverageRatings().access))}</span>
-                  <span>{getAverageRatings().access}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {getFavoriteOnsens().length > 0 && (
-            <div className="favorite-onsens">
-              <h3>よく訪れる温泉 TOP5</h3>
-              <ul>
-                {getFavoriteOnsens().map((onsen, index) => (
-                  <li key={index}>
-                    <span className="rank">#{index + 1}</span>
-                    <span className="name">{onsen.name}</span>
-                    <span className="count">{onsen.count}回</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {getMonthlyStats().length > 0 && (
-            <div className="chart-container">
-              <h3>月別訪問回数</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={getMonthlyStats()}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="訪問回数" fill="#c9a961" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {getSpringQualityStats().length > 0 && (
-            <div className="chart-container">
-              <h3>泉質別訪問回数</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={getSpringQualityStats()}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="訪問回数" fill="#8b6f47" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="onsen-list">
-        <div className="list-header">
-          <h2>温泉記録一覧</h2>
-          <button 
-            className={`filter-button ${filterWantToVisit ? 'active' : ''}`}
-            onClick={() => setFilterWantToVisit(!filterWantToVisit)}
+          {/* 画像アップロードボタン */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            accept="image/*"
+            style={{ display: 'none' }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            style={{
+              width: '100%',
+              marginTop: '8px',
+              padding: '8px',
+              background: '#f3f4f6',
+              border: '1px dashed #d1d5db',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              color: '#6b7280',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '4px'
+            }}
           >
-            {filterWantToVisit ? '全て表示' : '行きたい温泉のみ表示'}
+            {isUploading ? (
+              <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
+            ) : (
+              <>
+                <Upload size={14} />
+                画像を変更
+              </>
+            )}
           </button>
         </div>
-        
-        {getFilteredOnsens().length === 0 ? (
-          <p className="empty-message">
-            {filterWantToVisit 
-              ? 'まだ「行きたい」温泉が登録されていません。'
-              : 'まだ温泉が記録されていません。'}
-            <br/>「+ 新しい温泉を記録」ボタンから始めましょう！
-          </p>
-        ) : (
-          <div className="onsen-grid">
-            {getFilteredOnsens().map(onsen => (
-              <div key={onsen.id} className="onsen-card">
-                {onsen.wantToVisit && (
-                  <div className="want-to-visit-badge">行きたい</div>
-                )}
-                {onsen.photoUrls && onsen.photoUrls.length > 0 && (
-                  <div className="onsen-photos">
-                    {onsen.photoUrls.slice(0, 3).map((url, index) => (
-                      <img key={index} src={url} alt={`${onsen.name} ${index + 1}`} />
-                    ))}
-                  </div>
-                )}
-                <div className="onsen-content">
-                  <h3>{onsen.name}</h3>
-                  {!onsen.wantToVisit && (
-                    <p className="visit-date">📅 {format(parseISO(onsen.visitDate), 'yyyy年M月d日', { locale: ja })}</p>
-                  )}
-                  
-                  {onsen.address && (
-                    <p className="address">📍 {onsen.address}</p>
-                  )}
 
-                  {onsen.distance && (
-                    <p className="distance">🚗 自宅から約{onsen.distance}km</p>
-                  )}
-
-                  {onsen.springQualities && onsen.springQualities.length > 0 && (
-                    <div className="spring-qualities">
-                      {onsen.springQualities.map((quality, index) => (
-                        <span key={index} className="quality-tag">{quality}</span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="onsen-details">
-                    {onsen.sourceTemp && <p>🌡️ 源泉温度: {onsen.sourceTemp}</p>}
-                    {onsen.ph && <p>💧 pH: {onsen.ph}</p>}
-                    {onsen.price && <p>💰 料金: {onsen.price}</p>}
-                    {onsen.hours && <p>🕐 営業時間: {onsen.hours}</p>}
-                    {!onsen.wantToVisit && onsen.crowdedness && <p>👥 混雑度: {onsen.crowdedness}</p>}
-                  </div>
-
-                  {onsen.waterTreatment && Object.values(onsen.waterTreatment).some(v => v) && (
-                    <div className="water-treatment">
-                      <p className="water-treatment-title">源泉管理:</p>
-                      <div className="treatment-tags">
-                        {onsen.waterTreatment.heating && <span>加温</span>}
-                        {onsen.waterTreatment.dilution && <span>加水</span>}
-                        {onsen.waterTreatment.circulation && <span>循環</span>}
-                        {onsen.waterTreatment.chlorination && <span>消毒</span>}
-                      </div>
-                    </div>
-                  )}
-
-                  {onsen.facilities && Object.values(onsen.facilities).some(f => f) && (
-                    <div className="facilities">
-                      <p className="facilities-title">施設:</p>
-                      <div className="facility-tags">
-                        {onsen.facilities.openAirBath && <span>露天風呂</span>}
-                        {onsen.facilities.sauna && <span>サウナ</span>}
-                        {onsen.facilities.coldBath && <span>水風呂</span>}
-                        {onsen.facilities.restRoom && <span>休憩室</span>}
-                        {onsen.facilities.restaurant && <span>レストラン</span>}
-                        {onsen.facilities.parking && <span>駐車場</span>}
-                      </div>
-                    </div>
-                  )}
-
-                  {onsen.amenities && (
-                    <p className="amenities">🧴 アメニティ: {onsen.amenities}</p>
-                  )}
-
-                  {!onsen.wantToVisit && onsen.ratings && (
-                    <div className="ratings">
-                      <div className="rating-display-item">
-                        <span>お湯:</span>
-                        <span className="stars">{renderStars(onsen.ratings?.waterQuality || 0)}</span>
-                      </div>
-                      <div className="rating-display-item">
-                        <span>清潔:</span>
-                        <span className="stars">{renderStars(onsen.ratings?.cleanliness || 0)}</span>
-                      </div>
-                      <div className="rating-display-item">
-                        <span>アクセス:</span>
-                        <span className="stars">{renderStars(onsen.ratings?.access || 0)}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {onsen.notes && (
-                    <p className="notes">💭 {onsen.notes}</p>
-                  )}
-
-                  <div className="card-buttons">
-                    <button onClick={() => handleEdit(onsen)} className="edit-button">
-                      編集
-                    </button>
-                    <button onClick={() => handleDelete(onsen.id)} className="delete-button">
-                      削除
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
+        <div style={{ flex: 1 }}>
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '12px', color: '#6b7280' }}>タイトル</label>
+            <input
+              type="text"
+              value={editedResult.title}
+              onChange={e => setEditedResult({ ...editedResult, title: e.target.value })}
+              style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', marginTop: '4px' }}
+            />
           </div>
-        )}
+          <div style={{ marginBottom: '12px' }}>
+            <label style={{ fontSize: '12px', color: '#6b7280' }}>著者</label>
+            <input
+              type="text"
+              value={editedResult.author}
+              onChange={e => setEditedResult({ ...editedResult, author: e.target.value })}
+              style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', marginTop: '4px' }}
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: '12px', color: '#6b7280' }}>出版社</label>
+            <input
+              type="text"
+              value={editedResult.publisher}
+              onChange={e => setEditedResult({ ...editedResult, publisher: e.target.value })}
+              style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px', marginTop: '4px' }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '12px', marginTop: '20px', justifyContent: 'flex-end' }}>
+        <button
+          onClick={onCancel}
+          style={{ padding: '10px 20px', background: 'white', border: '2px solid #d1d5db', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', color: '#4b5563' }}
+        >
+          キャンセル
+        </button>
+        <button
+          onClick={() => onAdd(editedResult)}
+          disabled={!editedResult.title}
+          style={{
+            padding: '10px 24px',
+            background: editedResult.title ? '#10b981' : '#d1d5db',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: editedResult.title ? 'pointer' : 'not-allowed',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          本棚に追加
+        </button>
+      </div>
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// 本詳細モーダル
+function BookDetailModal({ book, isEditMode, onClose, onEdit, onSave, onDelete, uploadImage, user }) {
+  const [editedBook, setEditedBook] = useState(book);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleStatusChange = (status) => {
+    const updated = { ...editedBook, status };
+    if (status === STATUS.READING && !editedBook.startDate) {
+      updated.startDate = new Date().toISOString().split('T')[0];
+    }
+    if (status === STATUS.COMPLETED && !editedBook.endDate) {
+      updated.endDate = new Date().toISOString().split('T')[0];
+    }
+    setEditedBook(updated);
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setIsUploading(true);
+    const url = await uploadImage(file, editedBook.id);
+    if (url) {
+      setEditedBook({ ...editedBook, cover: url });
+    }
+    setIsUploading(false);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,0.5)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '20px',
+      zIndex: 1000
+    }}>
+      <div style={{
+        background: 'white',
+        borderRadius: '16px',
+        maxWidth: '500px',
+        width: '100%',
+        maxHeight: '90vh',
+        overflow: 'auto',
+        position: 'relative'
+      }}>
+        <button
+          onClick={onClose}
+          style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', zIndex: 10 }}
+        >
+          <X size={24} />
+        </button>
+
+        <div style={{
+          background: 'linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%)',
+          padding: '24px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center'
+        }}>
+          <div style={{
+            width: '120px',
+            aspectRatio: '2/3',
+            borderRadius: '4px',
+            overflow: 'hidden',
+            boxShadow: '0 8px 25px rgba(0,0,0,0.3)',
+            background: 'white'
+          }}>
+            {editedBook.cover ? (
+              <img src={editedBook.cover} referrerPolicy="no-referrer" alt={editedBook.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <div style={{
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                color: 'white',
+                padding: '12px',
+                textAlign: 'center',
+                fontSize: '11px'
+              }}>
+                {editedBook.title}
+              </div>
+            )}
+          </div>
+          
+          {/* 画像アップロードボタン */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            accept="image/*"
+            style={{ display: 'none' }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            style={{
+              marginTop: '12px',
+              padding: '8px 16px',
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              color: 'white',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
+          >
+            {isUploading ? (
+              <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
+            ) : (
+              <>
+                <Upload size={14} />
+                表紙画像を変更
+              </>
+            )}
+          </button>
+        </div>
+
+        <div style={{ padding: '24px' }}>
+          {isEditMode ? (
+            <>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ fontSize: '12px', color: '#6b7280' }}>タイトル</label>
+                <input
+                  type="text"
+                  value={editedBook.title}
+                  onChange={e => setEditedBook({ ...editedBook, title: e.target.value })}
+                  style={{ width: '100%', padding: '10px 12px', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', marginTop: '4px' }}
+                />
+              </div>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ fontSize: '12px', color: '#6b7280' }}>著者</label>
+                <input
+                  type="text"
+                  value={editedBook.author}
+                  onChange={e => setEditedBook({ ...editedBook, author: e.target.value })}
+                  style={{ width: '100%', padding: '10px 12px', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', marginTop: '4px' }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#1f2937', marginBottom: '4px' }}>{editedBook.title}</h2>
+              <p style={{ fontSize: '14px', color: '#6b7280', marginBottom: '16px' }}>
+                {editedBook.author}{editedBook.publisher && ` / ${editedBook.publisher}`}
+              </p>
+            </>
+          )}
+
+          <div style={{ marginBottom: '20px' }}>
+            <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '8px' }}>読書状態</label>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {Object.entries(STATUS_LABELS).map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => handleStatusChange(key)}
+                  style={{
+                    flex: '1 1 calc(50% - 4px)',
+                    minWidth: '80px',
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '2px solid',
+                    borderColor: editedBook.status === key ? STATUS_COLORS[key].bg : '#e5e7eb',
+                    background: editedBook.status === key ? STATUS_COLORS[key].light : 'white',
+                    color: editedBook.status === key ? STATUS_COLORS[key].text : '#6b7280',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '500'
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '16px', marginBottom: '20px' }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '12px', color: '#6b7280' }}>読書開始日</label>
+              <input
+                type="date"
+                value={editedBook.startDate}
+                onChange={e => setEditedBook({ ...editedBook, startDate: e.target.value })}
+                style={{ width: '100%', padding: '10px 12px', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', marginTop: '4px' }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '12px', color: '#6b7280' }}>読了日</label>
+              <input
+                type="date"
+                value={editedBook.endDate}
+                onChange={e => setEditedBook({ ...editedBook, endDate: e.target.value })}
+                style={{ width: '100%', padding: '10px 12px', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', marginTop: '4px' }}
+              />
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '20px' }}>
+            <label style={{ fontSize: '12px', color: '#6b7280', display: 'block', marginBottom: '8px' }}>評価</label>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {[1, 2, 3, 4, 5].map(star => (
+                <button
+                  key={star}
+                  onClick={() => setEditedBook({ ...editedBook, rating: star })}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+                >
+                  <Star size={28} fill={star <= editedBook.rating ? '#fbbf24' : 'none'} stroke={star <= editedBook.rating ? '#fbbf24' : '#d1d5db'} strokeWidth={1.5} />
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: '24px' }}>
+            <label style={{ fontSize: '12px', color: '#6b7280' }}>感想・メモ</label>
+            <textarea
+              value={editedBook.review}
+              onChange={e => setEditedBook({ ...editedBook, review: e.target.value })}
+              placeholder="この本の感想を書く..."
+              rows={4}
+              style={{ width: '100%', padding: '12px', border: '2px solid #e5e7eb', borderRadius: '8px', fontSize: '14px', marginTop: '4px', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button
+              onClick={() => onDelete(editedBook.id)}
+              style={{ padding: '12px', background: '#fef2f2', color: '#dc2626', border: 'none', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+            >
+              <Trash2 size={18} />
+            </button>
+            {isEditMode ? (
+              <button
+                onClick={() => onSave(editedBook)}
+                style={{ flex: 1, padding: '12px 24px', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' }}
+              >
+                保存
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={onEdit}
+                  style={{
+                    flex: 1,
+                    padding: '12px 24px',
+                    background: '#f3f4f6',
+                    color: '#4b5563',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  <Edit3 size={16} />
+                  編集
+                </button>
+                <button
+                  onClick={() => onSave(editedBook)}
+                  style={{ flex: 1, padding: '12px 24px', background: '#1e3a5f', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' }}
+                >
+                  更新
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+        <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       </div>
     </div>
   );
 }
 
-export default App;
+// バーコードスキャナーコンポーネント
+function BarcodeScanner({ onScan, onClose }) {
+  const [error, setError] = useState('');
+  const [isStarting, setIsStarting] = useState(true);
+  const scannerRef = useRef(null);
+  const html5QrCodeRef = useRef(null);
+
+  useEffect(() => {
+    const startScanner = async () => {
+      try {
+        html5QrCodeRef.current = new Html5Qrcode("barcode-reader");
+        
+        await html5QrCodeRef.current.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 280, height: 150 }, aspectRatio: 1.777 },
+          (decodedText) => {
+            const cleanCode = decodedText.replace(/[^0-9]/g, '');
+            if (cleanCode.length === 13 && (cleanCode.startsWith('978') || cleanCode.startsWith('979'))) {
+              if (navigator.vibrate) navigator.vibrate(100);
+              stopScanner();
+              onScan(cleanCode);
+            } else if (cleanCode.length === 10) {
+              if (navigator.vibrate) navigator.vibrate(100);
+              stopScanner();
+              onScan(cleanCode);
+            }
+          },
+          () => {}
+        );
+        setIsStarting(false);
+      } catch (err) {
+        console.error('Scanner error:', err);
+        setError('カメラを起動できませんでした。カメラへのアクセスを許可してください。');
+        setIsStarting(false);
+      }
+    };
+
+    const stopScanner = async () => {
+      if (html5QrCodeRef.current) {
+        try {
+          await html5QrCodeRef.current.stop();
+          html5QrCodeRef.current.clear();
+        } catch (e) {
+          console.log('Scanner already stopped');
+        }
+      }
+    };
+
+    startScanner();
+    return () => { stopScanner(); };
+  }, [onScan]);
+
+  const handleClose = async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+      } catch (e) {}
+    }
+    onClose();
+  };
+
+  return (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,0.9)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000,
+      padding: '20px'
+    }}>
+      <button
+        onClick={handleClose}
+        style={{
+          position: 'absolute',
+          top: '20px',
+          right: '20px',
+          background: 'rgba(255,255,255,0.2)',
+          border: 'none',
+          borderRadius: '50%',
+          width: '44px',
+          height: '44px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          color: 'white'
+        }}
+      >
+        <X size={24} />
+      </button>
+
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <h2 style={{ color: 'white', fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>バーコードをスキャン</h2>
+        <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '14px' }}>本の裏表紙にあるバーコードを枠内に合わせてください</p>
+      </div>
+
+      <div style={{ width: '100%', maxWidth: '400px', borderRadius: '16px', overflow: 'hidden', background: '#000' }}>
+        {isStarting && (
+          <div style={{ padding: '60px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+            <Loader size={32} style={{ animation: 'spin 1s linear infinite', marginBottom: '12px' }} />
+            <span>カメラを起動中...</span>
+          </div>
+        )}
+        
+        {error ? (
+          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#f87171' }}>
+            <p style={{ marginBottom: '16px' }}>{error}</p>
+            <button onClick={handleClose} style={{ padding: '10px 20px', background: '#1e3a5f', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+              閉じる
+            </button>
+          </div>
+        ) : (
+          <div id="barcode-reader" ref={scannerRef} style={{ width: '100%' }} />
+        )}
+      </div>
+
+      <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '12px', marginTop: '20px', textAlign: 'center' }}>
+        978または979で始まるISBNバーコードを認識します
+      </p>
+
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        #barcode-reader video { width: 100% !important; border-radius: 8px; }
+        #barcode-reader__scan_region { background: transparent !important; }
+        #barcode-reader__dashboard { display: none !important; }
+      `}</style>
+    </div>
+  );
+}
